@@ -1,0 +1,125 @@
+import gradio as gr
+import pandas as pd
+import plotly.express as px
+import os
+from dotenv import load_dotenv
+from openai import OpenAI
+
+load_dotenv()
+
+client = OpenAI(
+    api_key=os.getenv("XAI_API_KEY"),
+    base_url="https://api.x.ai/v1"
+)
+
+MODEL = "grok-3"
+
+data = None
+chat_history = []
+
+def load_data(file):
+    global data
+    if file is None:
+        return "Please upload a file", None
+    try:
+        if file.name.endswith('.csv'):
+            data = pd.read_csv(file)
+        elif file.name.endswith(('.xls', '.xlsx')):
+            data = pd.read_excel(file)
+        else:
+            return "Unsupported file format", None
+        return f"Loaded {len(data)} rows with {len(data.columns)} columns", data.head().to_string()
+    except Exception as e:
+        return f"Error loading file: {str(e)}", None
+
+def ask_ai(query):
+    global data, chat_history
+    if data is None:
+        return "Please upload a dataset first."
+    
+    context = f"Dataset info:\nColumns: {list(data.columns)}\nSample:\n{data.head(5).to_string()}\n\n"
+    context += f"Summary stats:\n{data.describe().to_string()}\n\n"
+    
+    messages = [
+        {"role": "system", "content": "You are a data intelligence analyst. Answer questions about the dataset, suggest insights, and provide code or steps if needed."},
+    ]
+    for h in chat_history:
+        messages.append({"role": "user", "content": h[0]})
+        messages.append({"role": "assistant", "content": h[1]})
+    
+    messages.append({"role": "user", "content": context + query})
+    
+    try:
+        response = client.chat.completions.create(
+            model=MODEL,
+            messages=messages,
+            temperature=0.7,
+            max_tokens=1024
+        )
+        answer = response.choices[0].message.content
+        chat_history.append((query, answer))
+        return answer
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+def create_visualization(chart_type, x_col, y_col):
+    global data
+    if data is None:
+        return None
+    try:
+        if chart_type == "Scatter":
+            fig = px.scatter(data, x=x_col, y=y_col, title=f"{x_col} vs {y_col}")
+        elif chart_type == "Bar":
+            fig = px.bar(data, x=x_col, y=y_col, title=f"{y_col} by {x_col}")
+        elif chart_type == "Line":
+            fig = px.line(data, x=x_col, y=y_col, title=f"{y_col} over {x_col}")
+        else:
+            fig = px.histogram(data, x=x_col, title=f"Distribution of {x_col}")
+        return fig
+    except Exception:
+        return None
+
+with gr.Blocks(title="Adarsh Intelligence Platform", theme=gr.themes.Soft()) as demo:
+    gr.Markdown("# 🧠 Adarsh Intelligence Platform\nPersonal Data Intelligence Tool (Mini Palantir)")
+    
+    with gr.Tab("Data Upload"):
+        file_upload = gr.File(label="Upload CSV or Excel", file_types=[".csv", ".xlsx"])
+        load_btn = gr.Button("Load Dataset")
+        status = gr.Textbox(label="Status")
+        preview = gr.Textbox(label="Preview", lines=10)
+        
+        load_btn.click(load_data, inputs=[file_upload], outputs=[status, preview])
+    
+    with gr.Tab("AI Query"):
+        query = gr.Textbox(label="Ask anything about your data", placeholder="What is the average sales? Show trends...")
+        ask_btn = gr.Button("Ask AI")
+        ai_response = gr.Textbox(label="AI Insights", lines=8)
+        
+        ask_btn.click(ask_ai, inputs=[query], outputs=[ai_response])
+    
+    with gr.Tab("Visualizations"):
+        chart_type = gr.Dropdown(["Scatter", "Bar", "Line", "Histogram"], label="Chart Type")
+        x_col = gr.Dropdown(label="X Column", choices=[])
+        y_col = gr.Dropdown(label="Y Column (optional)", choices=[])
+        viz_btn = gr.Button("Generate Chart")
+        chart = gr.Plot()
+        
+        def update_cols():
+            if data is not None:
+                return gr.update(choices=list(data.columns)), gr.update(choices=list(data.columns))
+            return [], []
+        
+        viz_btn.click(create_visualization, inputs=[chart_type, x_col, y_col], outputs=[chart])
+    
+    with gr.Tab("Summary"):
+        summary_btn = gr.Button("Show Dataset Summary")
+        summary_output = gr.Textbox(label="Summary", lines=15)
+        
+        def show_summary():
+            if data is None:
+                return "No data loaded"
+            return str(data.describe()) + "\n\nColumns: " + str(list(data.columns))
+        
+        summary_btn.click(show_summary, outputs=[summary_output])
+
+demo.launch(server_name="0.0.0.0", server_port=7860, share=True)
